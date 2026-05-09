@@ -61,7 +61,8 @@ def get_params():
     parser.add_argument("--stop_pick", action="store_true")
     parser.add_argument("--arm_kp", type=int, default=40) # only useful when log data
     parser.add_argument("--arm_kd", type=float, default=2) # only useful when log data
-    parser.add_argument("--table_height", type=float, default=None) # only useful when log data
+    parser.add_argument("--table_height", type=float, default=None,
+                        help="World z of tabletop (upper surface), m; overrides cfg env.table_surface_height.")
     parser.add_argument("--seed", type=int, default=43) # only useful when log data
     
     args = parser.parse_args()

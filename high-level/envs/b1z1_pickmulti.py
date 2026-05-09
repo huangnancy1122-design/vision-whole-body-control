@@ -20,11 +20,16 @@ class B1Z1PickMulti(B1Z1Base):
     def __init__(self, table_height=None, *args, **kwargs):
         self.num_actors = 3
         super().__init__(*args, **kwargs)
-        # Per-env table height drawn once at startup; reused on every reset (no resampling).
-        # self.table_heights_init = torch_rand_float(0.3, 0.7, (self.num_envs, 1), device=self.device)
+        # World z of tabletop (upper surface), meters. CLI --table_height overrides cfg env.table_surface_height.
+        # If neither is set, each env gets one random surface height in [0.3, 0.7] at startup.
+        _surf = table_height if table_height is not None else self.cfg["env"].get("table_surface_height")
+        self._table_surface_z = (
+            torch.full((self.num_envs, 1), float(_surf), device=self.device, dtype=torch.float)
+            if _surf is not None
+            else torch_rand_float(0.3, 0.7, (self.num_envs, 1), device=self.device)
+        )
         self.near_goal_stop = self.cfg["env"].get("near_goal_stop", False)
         self.obj_move_prob = self.cfg["env"].get("obj_move_prob", 0.0)
-        self.table_heights_fix = table_height
 
     def update_roboinfo(self):
         super().update_roboinfo()
@@ -254,14 +259,9 @@ class B1Z1PickMulti(B1Z1Base):
             return
         
         self._table_root_states[env_ids] = self._initial_table_root_states[env_ids]
-        if self.table_heights_fix is None:
-            # rand_heights = torch_rand_float(0, 0.5, (len(env_ids), 1), device=self.device)
-            rand_heights = self.table_heights_init[env_ids]
-        else:
-            rand_heights = torch.ones((len(env_ids), 1), device=self.device, dtype=torch.float)*self.table_heights_fix - self.table_dimz / 2
-        
-        self._table_root_states[env_ids, 2] = rand_heights.squeeze(1) - self.table_dimz / 2.0
-        self.table_heights[env_ids] = self._table_root_states[env_ids, 2] + self.table_dimz / 2.0
+        surf = self._table_surface_z[env_ids]
+        self._table_root_states[env_ids, 2] = surf.squeeze(1) - self.table_dimz / 2.0
+        self.table_heights[env_ids] = surf.squeeze(1)
     
     def _reset_actors(self, env_ids):
         self._reset_table(env_ids)
