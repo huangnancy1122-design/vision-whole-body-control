@@ -21,7 +21,7 @@ class B1Z1PickMulti(B1Z1Base):
         self.num_actors = 3
         super().__init__(*args, **kwargs)
         # Per-env table height drawn once at startup; reused on every reset (no resampling).
-        self.table_heights_init = torch_rand_float(0.3, 0.7, (self.num_envs, 1), device=self.device)
+        # self.table_heights_init = torch_rand_float(0.3, 0.7, (self.num_envs, 1), device=self.device)
         self.near_goal_stop = self.cfg["env"].get("near_goal_stop", False)
         self.obj_move_prob = self.cfg["env"].get("obj_move_prob", 0.0)
         self.table_heights_fix = table_height
