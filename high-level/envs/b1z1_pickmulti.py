@@ -20,8 +20,8 @@ class B1Z1PickMulti(B1Z1Base):
     def __init__(self, table_height=None, *args, **kwargs):
         self.num_actors = 3
         super().__init__(*args, **kwargs)
-        # World z of tabletop (upper surface), meters. CLI --table_height overrides cfg env.table_surface_height.
-        # If neither is set, each env gets one random surface height in [0.3, 0.7] at startup.
+        # World z of tabletop upper surface (m). --table_height overrides cfg env.table_surface_height.
+        # If neither is set, each env draws one surface height in [0.3, 0.7] at startup (kept across resets).
         _surf = table_height if table_height is not None else self.cfg["env"].get("table_surface_height")
         self._table_surface_z = (
             torch.full((self.num_envs, 1), float(_surf), device=self.device, dtype=torch.float)
@@ -257,7 +257,7 @@ class B1Z1PickMulti(B1Z1Base):
     def _reset_table(self, env_ids):
         if len(env_ids)==0:
             return
-        
+
         self._table_root_states[env_ids] = self._initial_table_root_states[env_ids]
         surf = self._table_surface_z[env_ids]
         self._table_root_states[env_ids, 2] = surf.squeeze(1) - self.table_dimz / 2.0
