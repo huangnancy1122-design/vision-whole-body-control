@@ -318,7 +318,7 @@ def get_trainer(is_eval=False):
             action_space=env.action_space,
             device=device)
     
-    cfg_trainer = {"timesteps": args.timesteps, "headless": True}
+    cfg_trainer = {"timesteps": args.timesteps, "headless": args.headless}
     if args.checkpoint:
         print("Resuming from checkpoint: ", args.checkpoint)
         agent.load(args.checkpoint)

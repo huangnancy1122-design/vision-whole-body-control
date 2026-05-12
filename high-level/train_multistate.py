@@ -195,7 +195,8 @@ def get_trainer(is_eval=False):
             action_space=env.action_space,
             device=device)
     
-    cfg_trainer = {"timesteps": args.timesteps, "headless": True}
+    # Must match CLI: skrl trainer skips env.render() when headless=True; Isaac env also skips draw in step().
+    cfg_trainer = {"timesteps": args.timesteps, "headless": args.headless}
     if args.checkpoint:
         print("Resuming from checkpoint: ", args.checkpoint)
         agent.load(args.checkpoint)
