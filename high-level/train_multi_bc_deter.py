@@ -5,11 +5,14 @@ try:
 except:
     print("Cannot import isaacgym, works only for deployment")
 
+import copy
 import numpy as np
 import torch
 import os
 
 import torch.nn as nn
+
+_TRAIN_MULTI_BC_DETER_FILE = os.path.abspath(__file__)
 
 from skrl.models.torch import Model, GaussianMixin, DeterministicMixin
 from skrl.memories.torch import RandomMemory
@@ -216,7 +219,7 @@ def create_env(cfg, args, mode):
     return wrapped_env
 
 def get_trainer(is_eval=False):
-    from utils.config import load_cfg, get_params, copy_cfg
+    from utils.config import load_cfg, get_params, copy_cfg, build_wandb_kwargs, resolve_wandb_entity
     
     args = get_params()
     set_seed(args.seed)
@@ -233,10 +236,18 @@ def get_trainer(is_eval=False):
     
     # assert use_roboinfo, "Are you sure not using roboinfo?" # TODO: temporarily for reminder
     args.wandb = args.wandb and (not args.eval) and (not args.debug)
+    if args.wandb:
+        _er, _es = resolve_wandb_entity(args)
+        print(
+            "[wandb] early_resolve entity=%r source=%s cwd=%s script=%s"
+            % (_er, _es, os.getcwd(), _TRAIN_MULTI_BC_DETER_FILE)
+        )
+        if _er:
+            os.environ["WANDB_ENTITY"] = _er
     
     cfg_file = "b1z1_" + args.task[4:].lower() + ".yaml"
     file_path = "data/cfg/" + cfg_file
-    
+
     if args.resume:
         experiment_dir = os.path.join(args.experiment_dir, args.wandb_name)
         checkpoint_dir = os.path.join(experiment_dir, "checkpoints")
@@ -279,7 +290,7 @@ def get_trainer(is_eval=False):
     
     dagger_config = DAGGER_DEFAULT_CONFIG if args.mlp_stu else DAGGER_RNN_DEFAULT_CONFIG
     
-    cfg_dagger = dagger_config.copy()
+    cfg_dagger = copy.deepcopy(dagger_config)
     cfg_dagger["rollouts"] = 24  # memory_size
     cfg_dagger["learning_epochs"] = 5
     cfg_dagger["mini_batches"] = 3  # 24 * 8192 / 32768
@@ -308,7 +319,20 @@ def get_trainer(is_eval=False):
     cfg_dagger["reach_only"] = args.reach_only
     cfg_dagger["pred_success"] = args.pred_success
     if args.wandb:
-        cfg_dagger["experiment"]["wandb_kwargs"] = {"project": args.wandb_project, "tensorboard": False, "name": args.wandb_name}
+        cfg_dagger["experiment"]["wandb_kwargs"], _ent_src = build_wandb_kwargs(args)
+        if "entity" in cfg_dagger["experiment"]["wandb_kwargs"]:
+            print(
+                "[wandb] entity=%s (source=%s)"
+                % (
+                    cfg_dagger["experiment"]["wandb_kwargs"]["entity"],
+                    _ent_src,
+                )
+            )
+        if "entity" not in cfg_dagger["experiment"]["wandb_kwargs"]:
+            print(
+                "[wandb] No entity: pass --wandb_entity <username_or_team> or set WANDB_ENTITY "
+                "(could not infer from wandb.Api viewer)."
+            )
     
     if args.mlp_stu:
         agent = DAgger(models=model_dagger,

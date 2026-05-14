@@ -169,13 +169,6 @@ class B1Z1PickMulti(B1Z1Base):
     def _reset_envs(self, env_ids):
         super()._reset_envs(env_ids)
         if len(env_ids) > 0:
-            # bowl_indices = torch.tensor([0, 9, 27, 31], device=self.device)
-            # ball_indices = torch.tensor([3, 15, 17, 23], device=self.device)
-            # long_box_indices = torch.tensor([1], device=self.device)
-            # square_box_indices = torch.tensor([11, 12, 24], device=self.device)
-            # bottle_indices = torch.tensor([2, 13, 16, 20], device=self.device)
-            # cup_indices = torch.tensor([5, 28, 29], device=self.device)
-            # drill_indices = torch.tensor([7], device=self.device)
             num_group = self.num_envs // 33
             bowl_indices_np = np.array([[0+i*33, 9+i*33, 27+i*33, 31+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
             bowl_indices = torch.from_numpy(bowl_indices_np).to(self.device)

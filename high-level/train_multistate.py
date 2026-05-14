@@ -18,7 +18,7 @@ from skrl.utils import set_seed
 
 from envs import *
 
-from utils.config import load_cfg, get_params, copy_cfg
+from utils.config import load_cfg, get_params, copy_cfg, build_wandb_kwargs
 import utils.wrapper as wrapper
 
 set_seed(43)
@@ -112,7 +112,7 @@ def get_trainer(is_eval=False):
     args.wandb = args.wandb and (not args.eval) and (not args.debug)
     cfg_file = "b1z1_" + args.task[4:].lower() + ".yaml"
     file_path = "data/cfg/" + cfg_file
-    
+
     if args.resume:
         experiment_dir = os.path.join(args.experiment_dir, args.wandb_name)
         checkpoint_dir = os.path.join(experiment_dir, "checkpoints")
@@ -185,7 +185,7 @@ def get_trainer(is_eval=False):
     cfg_ppo["experiment"]["experiment_name"] = args.wandb_name
     cfg_ppo["experiment"]["wandb"] = args.wandb
     if args.wandb:
-        cfg_ppo["experiment"]["wandb_kwargs"] = {"project": args.wandb_project, "tensorboard": False, "name": args.wandb_name}
+        cfg_ppo["experiment"]["wandb_kwargs"], _ = build_wandb_kwargs(args)
         # cfg_ppo["experiment"]["wandb_kwargs"]["resume"] = True
         
     agent = PPO(models=models_ppo,

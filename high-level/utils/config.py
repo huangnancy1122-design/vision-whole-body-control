@@ -28,6 +28,12 @@ def get_params():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="isaacgym")
     parser.add_argument("--wandb_name", type=str, default="isaacgym")
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        default="",
+        help="Weights & Biases entity (username or team). If unset, uses WANDB_ENTITY or logged-in viewer.",
+    )
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--experiment_dir", type=str, default="experiments")
     parser.add_argument("--debugvis", action="store_true")
@@ -72,3 +78,41 @@ def get_params():
     args = parser.parse_args()
     
     return args
+
+
+def resolve_wandb_entity(args):
+    """Return (entity, source). Source is cli_or_env | api_viewer_team | api_viewer_username | none.
+
+    Prefer team slug over username: W&B ``username`` is often not a valid ``entity`` for upsertBucket
+    (e.g. runs must live under a team like ``huangnancy``, not ``huangnancy1122``).
+    """
+    e = (getattr(args, "wandb_entity", "") or os.environ.get("WANDB_ENTITY") or "").strip()
+    if e:
+        return e, "cli_or_env"
+    try:
+        import wandb
+
+        viewer = wandb.Api().viewer
+        teams = getattr(viewer, "teams", None) or []
+        if teams:
+            t0 = teams[0]
+            if isinstance(t0, dict):
+                t0 = t0.get("name") or t0.get("entity")
+            if t0:
+                return str(t0).strip(), "api_viewer_team"
+        un = getattr(viewer, "username", None)
+        if un and str(un).strip():
+            return str(un).strip(), "api_viewer_username"
+    except Exception:
+        pass
+    return "", "none"
+
+
+def build_wandb_kwargs(args):
+    """Return (kwargs, entity_source) for skrl wandb.init; entity from CLI/env or W&B viewer."""
+    entity, src = resolve_wandb_entity(args)
+    kwargs = {"project": args.wandb_project, "tensorboard": False, "name": args.wandb_name}
+    if entity:
+        kwargs["entity"] = entity
+        os.environ["WANDB_ENTITY"] = entity
+    return kwargs, src
