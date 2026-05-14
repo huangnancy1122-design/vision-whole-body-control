@@ -16,6 +16,57 @@ from isaacgym.torch_utils import *
 from torch import Tensor
 import torchvision.transforms as transforms
 
+# Semantic class for each asset_multi key (used for pickmulti_train_categories sampling & success stats).
+_PICKMULTI_ASSET_SEMANTIC_CATEGORY = {
+    "green_bowl": "bowl",
+    "sugar_box": "long_box",
+    "potato_chip_1": "square_box",
+    "plastic_peach": "ball",
+    "plastic_banana": "ball",
+    "green_cup": "cup",
+    "magic_clean": "bottle",
+    "power_drill": "drill",
+    "soap_dish": "bowl",
+    "yellow_bowl": "bowl",
+    "pitcher": "bottle",
+    "blue_tea_box": "square_box",
+    "mug": "cup",
+    "lipton_tea": "long_box",
+    "conditioner": "bottle",
+    "plastic_lemon": "ball",
+    "shampoo": "bottle",
+    "plastic_apple": "ball",
+    "plate_holder": "square_box",
+    "book_holder_3": "long_box",
+    "repellent": "bottle",
+    "glue_1": "long_box",
+    "blue_moon": "bottle",
+    "plastic_orange": "ball",
+    "pink_tea_box": "square_box",
+    "bleach_cleanser": "bottle",
+    "phillips_screwdriver": "drill",
+    "doraemon_bowl": "bowl",
+    "orange_cup": "cup",
+    "blue_cup": "cup",
+    "cleanser": "long_box",
+    "bowl": "bowl",
+    "clear_box": "square_box",
+}
+
+_STAT_CAT_ORDER = ("long_box", "square_box", "bottle", "cup", "bowl", "ball", "drill", "other")
+_STAT_CAT_ID = {c: i for i, c in enumerate(_STAT_CAT_ORDER)}
+_SUCCESS_RATE_TAG = {
+    "long_box": "SuccessRate / LongBox",
+    "square_box": "SuccessRate / SquareBox",
+    "bottle": "SuccessRate / Bottle",
+    "cup": "SuccessRate / Cup",
+    "bowl": "SuccessRate / Bowl",
+    "ball": "SuccessRate / Ball",
+    "drill": "SuccessRate / Drill",
+    "other": "SuccessRate / Other",
+}
+
+
 class B1Z1PickMulti(B1Z1Base):
     def __init__(self, table_height=None, *args, **kwargs):
         self.num_actors = 3
@@ -58,6 +109,26 @@ class B1Z1PickMulti(B1Z1Base):
         else:
             self.num_features = 0
 
+        raw_cats = self.cfg["env"].get("pickmulti_train_categories")
+        self._pickmulti_train_categories = None
+        self._allowed_obj_indices = None
+        if raw_cats:
+            want = set(str(c).strip() for c in raw_cats if str(c).strip())
+            self._pickmulti_train_categories = frozenset(want)
+            allowed = []
+            for idx, name in enumerate(self.obj_list):
+                cat = _PICKMULTI_ASSET_SEMANTIC_CATEGORY.get(name, "other")
+                if cat in self._pickmulti_train_categories:
+                    allowed.append(idx)
+            if not allowed:
+                raise ValueError(
+                    "pickmulti_train_categories %s matched no assets in asset_multi; check names vs _PICKMULTI_ASSET_SEMANTIC_CATEGORY."
+                    % (sorted(want),)
+                )
+            self._allowed_obj_indices = allowed
+        nenv = int(self.cfg["env"]["numEnvs"])
+        self._env_obj_idx_per_env_list = [0] * nenv
+
     def _init_tensors(self):
         """Add extra tensors for cube and table
         """
@@ -90,6 +161,22 @@ class B1Z1PickMulti(B1Z1Base):
         if self.pred_success:
             self.predlift_success_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
+        self._env_obj_idx_per_env = torch.tensor(
+            self._env_obj_idx_per_env_list, device=self.device, dtype=torch.long
+        )
+        del self._env_obj_idx_per_env_list
+
+        oids = self._env_obj_idx_per_env
+        _cats = [
+            _PICKMULTI_ASSET_SEMANTIC_CATEGORY.get(self.obj_list[int(oids[e].item())], "other")
+            for e in range(self.num_envs)
+        ]
+        self._env_stat_category = torch.tensor(
+            [_STAT_CAT_ID.get(c, _STAT_CAT_ID["other"]) for c in _cats],
+            device=self.device,
+            dtype=torch.long,
+        )
+
     def _create_extra(self, env_i):
         env_ptr = self.envs[env_i]
         col_group = env_i
@@ -99,7 +186,12 @@ class B1Z1PickMulti(B1Z1Base):
         table_pos = [0.0, 0.0, self.table_dims.z / 2]
         self.table_heights[i] = table_pos[-1] + self.table_dims.z / 2
 
-        obj_idx = i % len(self.obj_list)
+        if self._allowed_obj_indices is not None:
+            a = self._allowed_obj_indices
+            obj_idx = a[i % len(a)]
+        else:
+            obj_idx = i % len(self.obj_list)
+        self._env_obj_idx_per_env_list[i] = obj_idx
         obj_asset = self.ycb_asset_list[obj_idx]
         obj_height = self.obj_height[obj_idx]
         
@@ -166,65 +258,111 @@ class B1Z1PickMulti(B1Z1Base):
 
         super()._create_envs()
             
+    def _success_rates_from_env_categories(self) -> Tuple[Dict[str, float], Dict[str, Tuple[int, int]]]:
+        """Aggregate success by per-env semantic category (matches actual loaded asset)."""
+        rates: Dict[str, float] = {}
+        counts: Dict[str, Tuple[int, int]] = {}
+        for cat in _STAT_CAT_ORDER:
+            cid = _STAT_CAT_ID[cat]
+            mask = self._env_stat_category == cid
+            if not mask.any():
+                continue
+            st = self.success_counter[mask].sum().item(), self.episode_counter[mask].sum().item()
+            counts[cat] = st
+            rates[_SUCCESS_RATE_TAG[cat]] = min(st[0], st[1]) / max(st[1], 1)
+        return rates, counts
+
     def _reset_envs(self, env_ids):
         super()._reset_envs(env_ids)
-        if len(env_ids) > 0:
-            num_group = self.num_envs // 33
-            bowl_indices_np = np.array([[0+i*33, 9+i*33, 27+i*33, 31+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            bowl_indices = torch.from_numpy(bowl_indices_np).to(self.device)
-            ball_indices_np = np.array([[3+i*33, 15+i*33, 17+i*33, 23+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            ball_indices = torch.from_numpy(ball_indices_np).to(self.device)
-            long_box_indices_np = np.array([[1+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            long_box_indices = torch.from_numpy(long_box_indices_np).to(self.device)
-            square_box_indices_np = np.array([[11+i*33, 12+i*33, 24+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            square_box_indices = torch.from_numpy(square_box_indices_np).to(self.device)
-            bottle_indices_np = np.array([[2+i*33, 13+i*33, 16+i*33, 20+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            bottle_indices = torch.from_numpy(bottle_indices_np).to(self.device)
-            cup_indices_np = np.array([[5+i*33, 28+i*33, 29+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            cup_indices = torch.from_numpy(cup_indices_np).to(self.device)
-            drill_indices_np = np.array([[7+i*33] for i in range(num_group)]).reshape(1,-1).squeeze()
-            drill_indices = torch.from_numpy(drill_indices_np).to(self.device)
-            
-            bowl_success_time = self.success_counter[bowl_indices].sum().item(), self.episode_counter[bowl_indices].sum().item()
-            ball_success_time = self.success_counter[ball_indices].sum().item(), self.episode_counter[ball_indices].sum().item()
-            longbox_success_time = self.success_counter[long_box_indices].sum().item(), self.episode_counter[long_box_indices].sum().item()
-            squarebox_success_time = self.success_counter[square_box_indices].sum().item(), self.episode_counter[square_box_indices].sum().item()
-            bottle_success_time = self.success_counter[bottle_indices].sum().item(), self.episode_counter[bottle_indices].sum().item()
-            cup_success_time = self.success_counter[cup_indices].sum().item(), self.episode_counter[cup_indices].sum().item()
-            drill_success_time = self.success_counter[drill_indices].sum().item(), self.episode_counter[drill_indices].sum().item()
-            
-            bowl_success_rate = min(bowl_success_time[0], bowl_success_time[1]) / max(bowl_success_time[1], 1)
-            ball_success_rate = min(ball_success_time[0], ball_success_time[1]) / max(ball_success_time[1], 1)
-            longbox_success_rate = min(longbox_success_time[0], longbox_success_time[1]) / max(longbox_success_time[1], 1)
-            squarebox_success_rate = min(squarebox_success_time[0], squarebox_success_time[1]) / max(squarebox_success_time[1], 1)
-            bottle_success_rate = min(bottle_success_time[0], bottle_success_time[1]) / max(bottle_success_time[1], 1)
-            cup_success_rate = min(cup_success_time[0], cup_success_time[1]) / max(cup_success_time[1], 1)
-            drill_success_rate = min(drill_success_time[0], drill_success_time[1]) / max(drill_success_time[1], 1)
+        if len(env_ids) <= 0:
+            return
 
-            wandb_dict = {
-                "success_rate": {
-                    "SuccessRate / Bowl": bowl_success_rate,
-                    "SuccessRate / Ball": ball_success_rate,
-                    "SuccessRate / LongBox": longbox_success_rate,
-                    "SuccessRate / SquareBox": squarebox_success_rate,
-                    "SuccessRate / Bottle": bottle_success_rate,
-                    "SuccessRate / Cup": cup_success_rate,
-                    "SuccessRate / Drill": drill_success_rate,
-                }
-            }
+        if self._pickmulti_train_categories is not None:
+            rate_by_tag, count_by_cat = self._success_rates_from_env_categories()
+            wandb_dict = {"success_rate": rate_by_tag}
             if self.pred_success:
-                predlift_success_rate = 0 if self.global_step_counter==0 else (self.predlift_success_counter / self.local_step_counter).mean().item()
+                predlift_success_rate = (
+                    0
+                    if self.global_step_counter == 0
+                    else (self.predlift_success_counter / self.local_step_counter).mean().item()
+                )
                 wandb_dict["success_rate"]["SuccessRate / PredLifted"] = predlift_success_rate
-            
             if self.cfg["env"]["wandb"]:
                 self.extras.update(wandb_dict)
-                # wandb.log(wandb_dict, step=self.global_step_counter)
             else:
                 print(wandb_dict)
-                print("Bowl count: {}\n, Ball count: {}\n, LongBox count: {}\n, SquareBox count: {}\n, Bottle count: {}\n, Cup count: {}\n, Drill count: {}\n".format(bowl_success_time[1], ball_success_time[1], longbox_success_time[1], squarebox_success_time[1], bottle_success_time[1], cup_success_time[1], drill_success_time[1]))
+                parts = ["{}: succ {} / ep {}".format(c, *count_by_cat.get(c, (0, 0))) for c in count_by_cat]
+                print("By category (actual asset): " + "; ".join(parts))
                 success_time = self.success_counter.sum().item(), self.episode_counter.sum().item()
                 success_rate = min(success_time[0], success_time[1]) / max(success_time[1], 1)
                 print("Total success rate", success_rate)
+            return
+
+        num_group = self.num_envs // 33
+        bowl_indices_np = np.array([[0 + i * 33, 9 + i * 33, 27 + i * 33, 31 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        bowl_indices = torch.from_numpy(bowl_indices_np).to(self.device)
+        ball_indices_np = np.array([[3 + i * 33, 15 + i * 33, 17 + i * 33, 23 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        ball_indices = torch.from_numpy(ball_indices_np).to(self.device)
+        long_box_indices_np = np.array([[1 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        long_box_indices = torch.from_numpy(long_box_indices_np).to(self.device)
+        square_box_indices_np = np.array([[11 + i * 33, 12 + i * 33, 24 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        square_box_indices = torch.from_numpy(square_box_indices_np).to(self.device)
+        bottle_indices_np = np.array([[2 + i * 33, 13 + i * 33, 16 + i * 33, 20 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        bottle_indices = torch.from_numpy(bottle_indices_np).to(self.device)
+        cup_indices_np = np.array([[5 + i * 33, 28 + i * 33, 29 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        cup_indices = torch.from_numpy(cup_indices_np).to(self.device)
+        drill_indices_np = np.array([[7 + i * 33] for i in range(num_group)]).reshape(1, -1).squeeze()
+        drill_indices = torch.from_numpy(drill_indices_np).to(self.device)
+
+        bowl_success_time = self.success_counter[bowl_indices].sum().item(), self.episode_counter[bowl_indices].sum().item()
+        ball_success_time = self.success_counter[ball_indices].sum().item(), self.episode_counter[ball_indices].sum().item()
+        longbox_success_time = self.success_counter[long_box_indices].sum().item(), self.episode_counter[long_box_indices].sum().item()
+        squarebox_success_time = self.success_counter[square_box_indices].sum().item(), self.episode_counter[square_box_indices].sum().item()
+        bottle_success_time = self.success_counter[bottle_indices].sum().item(), self.episode_counter[bottle_indices].sum().item()
+        cup_success_time = self.success_counter[cup_indices].sum().item(), self.episode_counter[cup_indices].sum().item()
+        drill_success_time = self.success_counter[drill_indices].sum().item(), self.episode_counter[drill_indices].sum().item()
+
+        bowl_success_rate = min(bowl_success_time[0], bowl_success_time[1]) / max(bowl_success_time[1], 1)
+        ball_success_rate = min(ball_success_time[0], ball_success_time[1]) / max(ball_success_time[1], 1)
+        longbox_success_rate = min(longbox_success_time[0], longbox_success_time[1]) / max(longbox_success_time[1], 1)
+        squarebox_success_rate = min(squarebox_success_time[0], squarebox_success_time[1]) / max(squarebox_success_time[1], 1)
+        bottle_success_rate = min(bottle_success_time[0], bottle_success_time[1]) / max(bottle_success_time[1], 1)
+        cup_success_rate = min(cup_success_time[0], cup_success_time[1]) / max(cup_success_time[1], 1)
+        drill_success_rate = min(drill_success_time[0], drill_success_time[1]) / max(drill_success_time[1], 1)
+
+        wandb_dict = {
+            "success_rate": {
+                "SuccessRate / Bowl": bowl_success_rate,
+                "SuccessRate / Ball": ball_success_rate,
+                "SuccessRate / LongBox": longbox_success_rate,
+                "SuccessRate / SquareBox": squarebox_success_rate,
+                "SuccessRate / Bottle": bottle_success_rate,
+                "SuccessRate / Cup": cup_success_rate,
+                "SuccessRate / Drill": drill_success_rate,
+            }
+        }
+        if self.pred_success:
+            predlift_success_rate = 0 if self.global_step_counter == 0 else (self.predlift_success_counter / self.local_step_counter).mean().item()
+            wandb_dict["success_rate"]["SuccessRate / PredLifted"] = predlift_success_rate
+
+        if self.cfg["env"]["wandb"]:
+            self.extras.update(wandb_dict)
+        else:
+            print(wandb_dict)
+            print(
+                "Bowl count: {}\n, Ball count: {}\n, LongBox count: {}\n, SquareBox count: {}\n, Bottle count: {}\n, Cup count: {}\n, Drill count: {}\n".format(
+                    bowl_success_time[1],
+                    ball_success_time[1],
+                    longbox_success_time[1],
+                    squarebox_success_time[1],
+                    bottle_success_time[1],
+                    cup_success_time[1],
+                    drill_success_time[1],
+                )
+            )
+            success_time = self.success_counter.sum().item(), self.episode_counter.sum().item()
+            success_rate = min(success_time[0], success_time[1]) / max(success_time[1], 1)
+            print("Total success rate", success_rate)
                 
     def _reset_objs(self, env_ids):
         if len(env_ids)==0:

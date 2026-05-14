@@ -12,6 +12,14 @@ env:
   controlFrequencyLow: 8
   imgDelayFrame: 4
 
+  # Optional: only sample these semantic object categories when assigning envs (full asset_multi unchanged for obs dim).
+  # Keys: long_box, square_box, bottle, cup, bowl, ball, drill, other
+  pickmulti_train_categories:
+    - long_box
+    - square_box
+    - bottle
+    - cup
+
   liftedSuccessThreshold: 0.35
   liftedInitThreshold: 0.05
   baseObjectDisThreshold: 0.6
